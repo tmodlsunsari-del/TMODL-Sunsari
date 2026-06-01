@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net default-deny catch-all rule
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable, hardened global helper functions
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    
+    function incoming() { 
+      return request.resource.data; 
+    }
+    
+    function existing() { 
+      return resource.data; 
+    }
+
+    // Validation helper for the system administrative accounts
+    function isValidLRMSAccounts(data) {
+      return data.accounts is list
+        && data.accounts.size() <= 1000
+        && (data.accounts.size() == 0 || data.accounts[0] is map)
+        && (data.get('lastUpdated', '') is string && data.get('lastUpdated', '').size() <= 128);
+    }
+
+    // Validation helper for missing/found array lists
+    function isValidLRMSList(data) {
+      return data.list is list
+        && data.list.size() <= 10000
+        && (data.get('lastUpdated', '') is string && data.get('lastUpdated', '').size() <= 128);
+    }
+
+    // Secure rule block for /lrms_system/{systemId}
+    match /lrms_system/{systemId} {
+      allow read: if systemId == 'admin_accounts_doc' 
+        || systemId == 'missing_licenses_doc' 
+        || systemId == 'found_licenses_doc';
+      allow create: if (systemId == 'admin_accounts_doc' && isValidLRMSAccounts(incoming()))
+        || ((systemId == 'missing_licenses_doc' || systemId == 'found_licenses_doc') && isValidLRMSList(incoming()));
+      allow update: if (systemId == 'admin_accounts_doc' && isValidLRMSAccounts(incoming()))
+        || ((systemId == 'missing_licenses_doc' || systemId == 'found_licenses_doc') && isValidLRMSList(incoming()));
+      allow delete: if false; // Deletion of system lists is strictly forbidden
+    }
+  }
+}

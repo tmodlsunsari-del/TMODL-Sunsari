@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Remix: Remix: LICENES RECORD MANAGEMENT SYSTEM-Sitanshu",
+  "description": "High-performance enterprise license verification system handling large-scale Excel databases with O(1) lookup and intelligent input detection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

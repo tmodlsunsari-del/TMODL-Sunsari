@@ -1,0 +1,59 @@
+{
+  "entities": {
+    "LRMSAccounts": {
+      "title": "LRMS Administrative Accounts Document",
+      "description": "Contains the array of administrative accounts for the LRMS system.",
+      "type": "object",
+      "properties": {
+        "accounts": {
+          "type": "array",
+          "description": "The list of administrative accounts."
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of the last synchronization."
+        }
+      },
+      "required": [
+        "accounts"
+      ]
+    },
+    "LRMSMissingLicenses": {
+      "title": "LRMS Missing Licenses Document",
+      "description": "Contains the list of missing licenses added by staff.",
+      "type": "object",
+      "properties": {
+        "list": {
+          "type": "array",
+          "description": "Array of missing license records."
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "LRMSFoundLicenses": {
+      "title": "LRMS Found Licenses Document",
+      "description": "Contains the list of historical records showing how missing licenses were resolved, when, and who received them.",
+      "type": "object",
+      "properties": {
+        "list": {
+          "type": "array",
+          "description": "Array of solved (found) license records."
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  },
+  "firestore": {
+    "/lrms_system/{systemId}": {
+      "schema": "LRMSAccounts",
+      "description": "Stores system administrative configurations such as accounts, missing licenses, or found registry lists."
+    }
+  }
+}
