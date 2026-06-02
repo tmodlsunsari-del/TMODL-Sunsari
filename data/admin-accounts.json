@@ -1,0 +1,46 @@
+[
+  {
+    "username": "superadmin",
+    "mustChangePassword": false,
+    "designation": "Lead IT Controller",
+    "role": "super",
+    "status": "active",
+    "fullName": "Super User Administrator",
+    "passwordHash": "$2b$10$QkkEhNvmqXmyZHbA7i9iE.qEBg8M0/HEd8vYExF2TaEbvSQvalqoG",
+    "failedAttempts": 0,
+    "mobileNumber": "9841234567"
+  },
+  {
+    "failedAttempts": 0,
+    "mobileNumber": "9843112233",
+    "passwordHash": "$2b$10$K4nK3W1MdQpE6.Xuj0Y5HePnSpZkc7iLXGsUTwbQqV3D6fUHERxpa",
+    "username": "admin",
+    "mustChangePassword": true,
+    "designation": "Admin Operator",
+    "status": "active",
+    "role": "admin",
+    "fullName": "Lead Administrator"
+  },
+  {
+    "username": "staff",
+    "mustChangePassword": true,
+    "designation": "Computer Operator",
+    "role": "staff",
+    "status": "active",
+    "fullName": "Staff Operator Team",
+    "failedAttempts": 0,
+    "mobileNumber": "9845012345",
+    "passwordHash": "$2b$10$s9hY9MFECvQbyeFzwZHcVOYM6yc6beAN41PF9vM4/NUaMM7mODOkG"
+  },
+  {
+    "mustChangePassword": false,
+    "username": "utkrishta",
+    "fullName": "Utkrishta Dahal",
+    "status": "active",
+    "designation": "Computer Operator",
+    "role": "admin",
+    "passwordHash": "$2b$10$MZp2.ZsDC1W2y3ITm3KS8O82tn4UkaprdrsIPm4eo4zhLpTWhV8le",
+    "mobileNumber": "9862006288",
+    "failedAttempts": 0
+  }
+]

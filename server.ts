@@ -182,6 +182,29 @@ async function seedAccounts() {
     if (modified || accounts.length === 0) {
         await saveAccounts(accounts);
         console.log('✅ Default LRMS Administrative Accounts seeded successfully into persistence.');
+    } else {
+        // Heuristic self-healing: ensure superadmin is not suspended, and password hash is valid
+        let healed = false;
+        for (const acc of accounts) {
+            if (acc.username === 'superadmin') {
+                if (acc.status === 'suspended') {
+                    acc.status = 'active';
+                    healed = true;
+                }
+                if (acc.failedAttempts > 0) {
+                    acc.failedAttempts = 0;
+                    healed = true;
+                }
+                if (!acc.passwordHash || (!acc.passwordHash.startsWith('$2a$') && !acc.passwordHash.startsWith('$2b$'))) {
+                    acc.passwordHash = bcrypt.hashSync('Itahari@2026', 10);
+                    healed = true;
+                }
+            }
+        }
+        if (healed) {
+            await saveAccounts(accounts);
+            console.log('🔥 [Self-Healing] Superadmin account healed and sync\'ed back to Firestore Cloud.');
+        }
     }
 }
 
@@ -256,7 +279,7 @@ app.post('/api/auth/login', async (req, res) => {
         const passwordMatch = bcrypt.compareSync(password, user.passwordHash);
         if (!passwordMatch) {
             user.failedAttempts += 1;
-            if (user.failedAttempts >= 3) {
+            if (user.failedAttempts >= 5) {
                 user.status = 'suspended';
             }
             await saveAccounts(accounts);
@@ -264,7 +287,7 @@ app.post('/api/auth/login', async (req, res) => {
             if (user.status === 'suspended') {
                 return res.status(403).json({ error: 'धेरै असफल प्रयासहरूको कारण तपाईंको खाता अस्थायी रूपमा निलम्बित गरिएको छ।' });
             }
-            return res.status(401).json({ error: `गलत पासवर्ड! प्रयास बाँकी: ${3 - user.failedAttempts}/3` });
+            return res.status(401).json({ error: `गलत पासवर्ड! प्रयास बाँकी: ${5 - user.failedAttempts}/5` });
         }
 
         // Password corrected, direct login approved (2FA OTP Security removed)
@@ -1091,7 +1114,7 @@ async function startServer() {
         
         app.use(express.static(path.join(__dirname, 'dist')));
         
-        app.get('/:splat*', (req, res) => {
+        app.get(/.*/, (req, res) => {
             res.sendFile(path.join(__dirname, 'dist', 'index.html'));
         });
 
