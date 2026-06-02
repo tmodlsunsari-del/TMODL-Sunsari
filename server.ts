@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { google } from 'googleapis';
@@ -40,6 +41,8 @@ interface Account {
     mustChangePassword?: boolean;
     failedAttempts: number;
     passwordHash: string;
+    salt?: string;
+    lastLoginTime?: string;
 }
 
 // Initialize Firebase for absolute permanent storage of admin accounts
@@ -64,14 +67,151 @@ try {
     console.error('⚠️ Failed to initialize Firebase Firestore in server:', e);
 }
 
-// Helper: Synchronize accounts with local and remote Firebase Firestore
+// Google Sheets API Connection helper specifically for account databases
+function getSheetsClient() {
+    const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+    let privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
+
+    if (!email || !privateKey) {
+        return null;
+    }
+
+    try {
+        privateKey = privateKey.replace(/\\n/g, '\n');
+        const auth = new google.auth.JWT(
+            email,
+            undefined,
+            privateKey,
+            ['https://www.googleapis.com/auth/spreadsheets']
+        );
+        return google.sheets({ version: 'v4', auth });
+    } catch (e: any) {
+        console.error('❌ Failed to initialize Google Sheets API SDK in server:', e.message);
+        return null;
+    }
+}
+
+// Hash password helper for general SHA-256 syncing
+function hashPasswordInServer(password: string, salt: string): string {
+    return crypto.createHash('sha256').update(password + salt).digest('hex');
+}
+
+// Restore accounts from Sheets
+async function restoreAccountsFromSheets(): Promise<Account[] | null> {
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+    const client = getSheetsClient();
+    if (!client || !spreadsheetId) {
+        return null;
+    }
+
+    try {
+        const meta = await client.spreadsheets.get({ spreadsheetId });
+        const sheets = meta.data.sheets ?? [];
+        const hasDbSheet = sheets.some(s => s.properties?.title === 'LRMS_USERS_DB');
+
+        if (!hasDbSheet) {
+            console.log(`📡 [Sheets Auth] LRMS_USERS_DB tab not found. Bootstrapping initial tab in sheets...`);
+            await client.spreadsheets.batchUpdate({
+                spreadsheetId,
+                requestBody: {
+                    requests: [{
+                        addSheet: { properties: { title: 'LRMS_USERS_DB' } }
+                    }]
+                }
+            });
+            const headers = ["username", "fullName", "designation", "mobileNumber", "role", "status", "failedAttempts", "mustChangePassword", "passwordHash", "salt", "lastLoginTime"];
+            await client.spreadsheets.values.update({
+                spreadsheetId,
+                range: 'LRMS_USERS_DB!A1',
+                valueInputOption: 'RAW',
+                requestBody: { values: [headers] }
+            });
+            return null;
+        }
+
+        const response = await client.spreadsheets.values.get({
+            spreadsheetId,
+            range: 'LRMS_USERS_DB!A2:K1000'
+        });
+
+        const rows = response.data.values;
+        if (!rows || rows.length === 0) {
+            return null;
+        }
+
+        const accounts: Account[] = rows.map(row => ({
+            username: String(row[0] ?? '').trim().toLowerCase(),
+            fullName: String(row[1] ?? '').trim(),
+            designation: String(row[2] ?? '').trim(),
+            mobileNumber: String(row[3] ?? '').trim(),
+            role: (row[4] ?? 'staff') as 'super' | 'admin' | 'staff',
+            status: (row[5] ?? 'active') as 'active' | 'suspended',
+            failedAttempts: Number(row[6] ?? 0),
+            mustChangePassword: row[7] === 'true' || row[7] === true,
+            passwordHash: String(row[8] ?? ''),
+            salt: String(row[9] ?? ''),
+            lastLoginTime: String(row[10] ?? '')
+        }));
+
+        console.log(`📡 [Sheets Auth] Successfully synced ${accounts.length} operator accounts from Google Sheets.`);
+        return accounts;
+    } catch (err: any) {
+        console.error('❌ [Sheets Auth] Failed to restore accounts from Google Sheets:', err.message);
+        return null;
+    }
+}
+
+// Save accounts to Sheets
+async function saveAccountsToSheets(accounts: Account[]) {
+    const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+    const client = getSheetsClient();
+    if (!client || !spreadsheetId) {
+        return;
+    }
+
+    try {
+        const values = accounts.map(a => [
+            a.username || '',
+            a.fullName || '',
+            a.designation || '',
+            a.mobileNumber || '',
+            a.role || 'staff',
+            a.status || 'active',
+            a.failedAttempts ?? 0,
+            a.mustChangePassword ? 'true' : 'false',
+            a.passwordHash || '',
+            a.salt || '',
+            a.lastLoginTime || ''
+        ]);
+
+        await client.spreadsheets.values.clear({
+            spreadsheetId,
+            range: 'LRMS_USERS_DB!A2:K1000'
+        });
+
+        await client.spreadsheets.values.update({
+            spreadsheetId,
+            range: 'LRMS_USERS_DB!A2',
+            valueInputOption: 'RAW',
+            requestBody: { values }
+        });
+        console.log('📡 [Sheets Auth] Successfully hard-synced user account schema updates to Google Sheets master database.');
+    } catch (err: any) {
+        console.error('❌ [Sheets Auth] Failed writing back to Google Sheets:', err.message);
+    }
+}
+
+// Helper: Synchronize accounts with local, remote Firestore, and Google Sheets
 async function saveAccounts(accounts: Account[]) {
     try {
-        // 1. Write to local ACCOUNTS_FILE
+        // 1. Write to local ACCOUNTS_FILE cache
         fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf-8');
-        console.log('💾 Saved accounts to local filesystem cache.');
+        console.log('💾 Saved accounts to local JSON file system cache.');
 
-        // 2. Write to Firebase Firestore document for absolute persistence across container resets
+        // 2. Sync to Google Sheets Database
+        await saveAccountsToSheets(accounts);
+
+        // 3. Write to Firebase Firestore document for fallback persistence
         if (db) {
             const docRef = doc(db, 'lrms_system', 'admin_accounts_doc');
             await setDoc(docRef, { accounts, lastUpdated: new Date().toISOString() });
@@ -82,11 +222,19 @@ async function saveAccounts(accounts: Account[]) {
     }
 }
 
-// Helper: Restore accounts from persistent Firestore to local file
+// Helper: Restore accounts from Google Sheets, persistent Firestore, or local JSON file
 async function restoreAccountsFromFirestore(): Promise<Account[]> {
     let accounts: Account[] = [];
     
-    // Read from local if it exists
+    // First Priority: Try loading from Google Sheets Master DB
+    const sheetsAccounts = await restoreAccountsFromSheets();
+    if (sheetsAccounts && sheetsAccounts.length > 0) {
+        // Synchronise caches
+        fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(sheetsAccounts, null, 2), 'utf-8');
+        return sheetsAccounts;
+    }
+
+    // Second Priority: Read from local cache file if it exists
     if (fs.existsSync(ACCOUNTS_FILE)) {
         try {
             accounts = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8'));
@@ -95,7 +243,7 @@ async function restoreAccountsFromFirestore(): Promise<Account[]> {
         }
     }
 
-    // Try to load from Firestore and overwrite/restore if found
+    // Third Priority: Try to load from Firestore and overwrite/restore if found
     if (db) {
         try {
             console.log('🔄 Loading accounts from Firestore Cloud...');
@@ -275,8 +423,11 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(403).json({ error: 'धेरै असफल प्रयासहरूको कारण तपाईंको खाता अस्थायी रूपमा निलम्बित गरिएको छ।' });
         }
 
-        // Validate password
-        const passwordMatch = bcrypt.compareSync(password, user.passwordHash);
+        // Validate password (supports both bcrypt and SHA-256 with salt)
+        const passwordMatch = user.salt 
+            ? hashPasswordInServer(password, user.salt) === user.passwordHash
+            : bcrypt.compareSync(password, user.passwordHash);
+
         if (!passwordMatch) {
             user.failedAttempts += 1;
             if (user.failedAttempts >= 5) {
@@ -292,6 +443,7 @@ app.post('/api/auth/login', async (req, res) => {
 
         // Password corrected, direct login approved (2FA OTP Security removed)
         user.failedAttempts = 0;
+        user.lastLoginTime = new Date().toISOString();
         await saveAccounts(accounts);
 
         // Create JWT token immediately
@@ -404,7 +556,9 @@ app.post('/api/auth/change-password', verifyToken, async (req: any, res) => {
             return res.status(404).json({ error: 'प्रयोगकर्ता भेटिएन।' });
         }
 
-        accounts[idx].passwordHash = bcrypt.hashSync(newPassword, 10);
+        const salt = crypto.randomBytes(8).toString('hex');
+        accounts[idx].salt = salt;
+        accounts[idx].passwordHash = hashPasswordInServer(newPassword, salt);
         accounts[idx].mustChangePassword = false;
         accounts[idx].failedAttempts = 0;
 
@@ -490,8 +644,10 @@ app.post('/api/admin/change-any-password', verifyToken, async (req: any, res) =>
             return res.status(403).json({ error: 'यो प्रयोगकर्ताको पासवर्ड परिवर्तन गर्ने अधिकार तपाईंसँग छैन।' });
         }
 
-        // Apply new hashed password
-        targetUser.passwordHash = bcrypt.hashSync(newPassword, 10);
+                // Apply new hashed password
+        const salt = crypto.randomBytes(8).toString('hex');
+        targetUser.salt = salt;
+        targetUser.passwordHash = hashPasswordInServer(newPassword, salt);
         targetUser.mustChangePassword = false;
         targetUser.failedAttempts = 0;
 
@@ -549,6 +705,7 @@ app.post('/api/admin/staff', verifyToken, async (req: any, res) => {
             return res.status(400).json({ error: 'यो प्रयोगकर्ता नाम पहिले नै अवस्थित छ!' });
         }
 
+        const salt = crypto.randomBytes(8).toString('hex');
         accounts.push({
             username: username.toLowerCase().trim(),
             fullName: fullName.trim(),
@@ -558,7 +715,8 @@ app.post('/api/admin/staff', verifyToken, async (req: any, res) => {
             status: 'active',
             mustChangePassword: true,
             failedAttempts: 0,
-            passwordHash: bcrypt.hashSync(password, 10)
+            salt,
+            passwordHash: hashPasswordInServer(password, salt)
         });
 
         await saveAccounts(accounts);
@@ -624,7 +782,9 @@ app.post('/api/admin/request-staff-reset', verifyToken, async (req: any, res) =>
             }
         }
 
-        accounts[idx].passwordHash = bcrypt.hashSync(tempPassword, 10);
+        const salt = crypto.randomBytes(8).toString('hex');
+        accounts[idx].salt = salt;
+        accounts[idx].passwordHash = hashPasswordInServer(tempPassword, salt);
         // If Custom password is assigned, do not require change unless explicitly set to true
         accounts[idx].mustChangePassword = mustChangePassword !== undefined ? !!mustChangePassword : (customPassword ? false : true);
         accounts[idx].failedAttempts = 0;
@@ -673,7 +833,9 @@ app.post('/api/admin/confirm-staff-reset', verifyToken, async (req: any, res) =>
             tempPassword += characters.charAt(Math.floor(Math.random() * characters.length));
         }
 
-        accounts[idx].passwordHash = bcrypt.hashSync(tempPassword, 10);
+        const salt = crypto.randomBytes(8).toString('hex');
+        accounts[idx].salt = salt;
+        accounts[idx].passwordHash = hashPasswordInServer(tempPassword, salt);
         accounts[idx].mustChangePassword = true;
         accounts[idx].failedAttempts = 0;
         if (accounts[idx].status === 'suspended') accounts[idx].status = 'active';
